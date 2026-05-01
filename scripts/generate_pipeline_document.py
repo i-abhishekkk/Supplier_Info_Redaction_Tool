@@ -68,6 +68,12 @@ def add_code_block(document: Document, text: str) -> None:
 def build_document() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     document = Document()
+    document.core_properties.author = "VCreatek"
+    document.core_properties.last_modified_by = "VCreatek"
+    document.core_properties.title = "Supplier Redaction Workspace Technical Documentation"
+    document.core_properties.subject = "Technical architecture and pipeline documentation"
+    document.core_properties.comments = ""
+    document.core_properties.keywords = "supplier redaction, document redaction, Streamlit, FastAPI"
     section = document.sections[0]
     section.top_margin = Inches(0.65)
     section.bottom_margin = Inches(0.65)
