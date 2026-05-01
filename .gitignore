@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+
+# Runtime data
+data/uploads/*
+data/outputs/*
+data/streamlit_tmp/*
+data/streamlit_home/
+data/*.log
+contracts/
+
+# Keep runtime directories available
+!data/uploads/.gitkeep
+!data/outputs/.gitkeep
+!data/streamlit_tmp/.gitkeep
+
+# Office/editor lock files
+~$*
+
+# Local generated temp files
+[0-9a-z_][0-9a-z_][0-9a-z_][0-9a-z_][0-9a-z_][0-9a-z_][0-9a-z_][0-9a-z_]
