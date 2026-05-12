@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.detection import parse_supplier_names
 from app.models import RedactionOptions, RedactionResult
 from app.redactors import redact_document
+from app.sensitive import parse_sensitive_fields
 
 app = FastAPI(title=get_settings().app_name)
 
@@ -26,6 +27,7 @@ def health() -> dict[str, str]:
 async def redact(
     file: UploadFile = File(...),
     supplier_names: str = Form(""),
+    sensitive_fields: str = Form(""),
     detect_supplier_names: bool = Form(False),
     use_llm_extraction: bool | None = Form(None),
     use_ocr: bool | None = Form(None),
@@ -48,6 +50,7 @@ async def redact(
     names = parse_supplier_names(supplier_names)
     options = RedactionOptions(
         supplier_names=names,
+        sensitive_fields=parse_sensitive_fields(sensitive_fields),
         detect_supplier_names=detect_supplier_names,
         use_llm_extraction=use_llm_extraction,
         use_ocr=use_ocr,

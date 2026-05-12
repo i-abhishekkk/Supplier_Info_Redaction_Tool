@@ -8,6 +8,7 @@ from PIL import Image
 from pytesseract import Output, TesseractNotFoundError
 
 from app.config import get_settings
+from app.sensitive import SensitiveField, find_sensitive_text_matches
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,29 @@ def find_ocr_name_rects(ocr_pages: list[OcrPage], supplier_names: list[str]) -> 
     return matches
 
 
+def find_ocr_sensitive_rects(ocr_pages: list[OcrPage], fields: list[SensitiveField]) -> list[tuple[int, fitz.Rect, str]]:
+    matches: list[tuple[int, fitz.Rect, str]] = []
+    if not fields:
+        return matches
+
+    for page in ocr_pages:
+        for line_words in _group_words_by_line(page.words):
+            line_text, spans = _line_text_and_spans(line_words)
+            for match in find_sensitive_text_matches(line_text, fields):
+                start = line_text.lower().find(match.value.lower())
+                if start < 0:
+                    continue
+                end = start + len(match.value)
+                rect = None
+                for word, word_start, word_end in zip(line_words, (span[0] for span in spans), (span[1] for span in spans)):
+                    if word_end <= start or word_start >= end:
+                        continue
+                    rect = word.rect if rect is None else rect | word.rect
+                if rect is not None:
+                    matches.append((page.page, _pad_rect(rect, 1.5), match.label))
+    return matches
+
+
 def _read_words(data: dict, page_number: int, zoom: float, min_confidence: int) -> list[OcrWord]:
     words: list[OcrWord] = []
     total = len(data.get("text", []))
@@ -119,6 +143,37 @@ def _join_ocr_text(words: list[OcrWord]) -> str:
     if current:
         lines.append(" ".join(current))
     return "\n".join(lines)
+
+
+def _group_words_by_line(words: list[OcrWord]) -> list[list[OcrWord]]:
+    lines: list[list[OcrWord]] = []
+    current: list[OcrWord] = []
+    previous_y: float | None = None
+    for word in words:
+        if previous_y is not None and abs(word.rect.y0 - previous_y) > 8:
+            if current:
+                lines.append(current)
+            current = []
+        current.append(word)
+        previous_y = word.rect.y0
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _line_text_and_spans(words: list[OcrWord]) -> tuple[str, list[tuple[int, int]]]:
+    parts: list[str] = []
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for word in words:
+        if parts:
+            parts.append(" ")
+            cursor += 1
+        start = cursor
+        parts.append(word.text)
+        cursor += len(word.text)
+        spans.append((start, cursor))
+    return "".join(parts), spans
 
 
 def _normalize_token(value: str) -> str:

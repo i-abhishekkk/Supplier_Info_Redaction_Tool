@@ -1,12 +1,13 @@
 # Supplier Redaction Workspace
 
-Business-facing Streamlit application and backend pipeline for redacting supplier names, logos, and images from tender or contract documents.
+Business-facing Streamlit application and backend pipeline for redacting supplier names, sensitive personal/financial information, logos, and images from tender or contract documents.
 
 ## What it does
 
 - Accepts PDF and DOCX uploads.
 - Shows a first-page preview for PDFs without creating temporary preview files.
 - Redacts explicit supplier names supplied by the user.
+- Redacts selected sensitive information categories: email addresses, phone numbers, bank account details, and addresses.
 - Can opt into OpenAI LLM extraction for supplier/vendor/bidder names.
 - Can opt into likely organization-name detection with local regex heuristics.
 - Uses native PDF text when available.
@@ -32,7 +33,7 @@ Open `http://localhost:8501`.
 
 Use `run_ui.ps1` on Windows. It redirects Streamlit's config and temp folders into this project so the app does not try to write to `C:\Users\<user>\.streamlit`. The UI sends documents to the FastAPI backend configured by `REDACTION_API_URL`, which defaults to `http://127.0.0.1:8000`.
 
-This is the recommended interface for business users. It provides document upload, PDF preview, supplier-name input, LLM/OCR options, image redaction choices, redaction summary, warnings, and a download button backed by the API.
+This is the recommended interface for business users. It provides document upload, PDF preview, supplier-name input, sensitive-information category selection, LLM/OCR options, image redaction choices, redaction summary, warnings, and a download button backed by the API.
 
 The launcher also disables Python bytecode generation so app usage does not keep creating project-level `__pycache__` folders.
 
@@ -101,6 +102,12 @@ Force OCR and LLM extraction:
 python -m app.cli "contracts\some-scanned-tender.pdf" --llm --ocr --redact-all-images
 ```
 
+Redact sensitive information categories from the CLI:
+
+```powershell
+python -m app.cli "contracts\some-contract.pdf" --sensitive email --sensitive phone --sensitive bank_account --sensitive address
+```
+
 ## Smoke Test
 
 Run the end-to-end smoke test:
@@ -110,7 +117,7 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 .\.venv\Scripts\python.exe -B scripts\smoke_test_pipeline.py
 ```
 
-The smoke test verifies API health, sample PDF upload through `/redact`, redacted output creation, download through `/download`, and the OCR/LLM-requested path. If Tesseract or `OPENAI_API_KEY` are missing, the test expects warnings rather than crashes.
+The smoke test verifies API health, sensitive-information redaction on a synthetic PDF, sample PDF upload through `/redact`, redacted output creation, download through `/download`, and the OCR/LLM-requested path. If Tesseract or `OPENAI_API_KEY` are missing, the test expects warnings rather than crashes.
 
 ## Configuration
 
@@ -143,6 +150,7 @@ app/
   redactors.py               Core PDF/DOCX redaction pipeline
   ocr.py                     Tesseract OCR and OCR-coordinate matching
   detection.py               Heuristics and OpenAI supplier extraction
+  sensitive.py               Sensitive information category detection
   document_intelligence.py   Optional Azure Document Intelligence OCR
   cli.py                     Command-line runner
 

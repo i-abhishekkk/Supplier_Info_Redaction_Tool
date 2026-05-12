@@ -14,7 +14,8 @@ from app.detection import (
 )
 from app.document_intelligence import extract_text_with_document_intelligence
 from app.models import RedactionHit, RedactionOptions, RedactionResult
-from app.ocr import find_ocr_name_rects, run_pdf_ocr
+from app.ocr import find_ocr_name_rects, find_ocr_sensitive_rects, run_pdf_ocr
+from app.sensitive import SensitiveField, find_sensitive_text_matches, replace_sensitive_text
 
 
 PDF_MEDIA_TYPE = "application/pdf"
@@ -65,26 +66,44 @@ async def redact_pdf(input_path: Path, options: RedactionOptions) -> RedactionRe
     analysis_text = "\n".join(text_parts)
     supplier_names, name_sources, name_warnings = await _resolve_supplier_names(analysis_text, options)
     extraction_sources.extend(name_sources)
+    if options.sensitive_fields:
+        extraction_sources.append("sensitive-pattern-detection")
     warnings.extend(name_warnings)
 
     hits: list[RedactionHit] = []
     ocr_rects = find_ocr_name_rects(ocr_result.pages, supplier_names) if ocr_result else []
+    ocr_sensitive_rects = find_ocr_sensitive_rects(ocr_result.pages, options.sensitive_fields) if ocr_result else []
     doc = fitz.open(input_path)
     ocr_rects_by_page: dict[int, list[tuple[fitz.Rect, str]]] = {}
     for page_number, rect, name in ocr_rects:
         ocr_rects_by_page.setdefault(page_number, []).append((rect, name))
+    ocr_sensitive_rects_by_page: dict[int, list[tuple[fitz.Rect, str]]] = {}
+    for page_number, rect, label in ocr_sensitive_rects:
+        ocr_sensitive_rects_by_page.setdefault(page_number, []).append((rect, label))
 
     for page_index, page in enumerate(doc):
-        page_hits = _redact_page_text(page, supplier_names, options.replacement_text)
+        redacted_rects: list[fitz.Rect] = []
+        page_hits = _redact_page_text(page, supplier_names, options.replacement_text, redacted_rects)
+        hits.extend(RedactionHit(kind="text", page=page_index + 1, value=value, reason="supplier-name-match") for value in page_hits)
+        sensitive_hits = _redact_page_sensitive_text(page, options.sensitive_fields, options.replacement_text, redacted_rects)
         hits.extend(
-            RedactionHit(kind="text", page=page_index + 1, value=value, reason="supplier-name-match")
-            for value in page_hits
+            RedactionHit(kind="text", page=page_index + 1, value=value, reason="sensitive-info-match")
+            for value in sensitive_hits
         )
         for rect, name in ocr_rects_by_page.get(page_index + 1, []):
+            if any(rect.intersects(existing) for existing in redacted_rects):
+                continue
             page.add_redact_annot(rect, text=options.replacement_text, fill=(0, 0, 0), text_color=(1, 1, 1))
+            redacted_rects.append(rect)
             hits.append(
                 RedactionHit(kind="text", page=page_index + 1, value=name, reason="ocr-supplier-name-match")
             )
+        for rect, label in ocr_sensitive_rects_by_page.get(page_index + 1, []):
+            if any(rect.intersects(existing) for existing in redacted_rects):
+                continue
+            page.add_redact_annot(rect, text=options.replacement_text, fill=(0, 0, 0), text_color=(1, 1, 1))
+            redacted_rects.append(rect)
+            hits.append(RedactionHit(kind="text", page=page_index + 1, value=label, reason="ocr-sensitive-info-match"))
 
         for rect, reason in _image_redaction_rects(page, options):
             page.add_redact_annot(rect, fill=(0, 0, 0))
@@ -100,6 +119,7 @@ async def redact_pdf(input_path: Path, options: RedactionOptions) -> RedactionRe
         media_type=PDF_MEDIA_TYPE,
         hits=hits,
         supplier_names=supplier_names,
+        sensitive_fields=options.sensitive_fields,
         extraction_sources=_dedupe(extraction_sources),
         warnings=warnings,
     )
@@ -113,15 +133,20 @@ async def redact_docx(input_path: Path, options: RedactionOptions) -> RedactionR
     doc = Document(input_path)
     text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
     supplier_names, name_sources, name_warnings = await _resolve_supplier_names(text, options)
+    extraction_sources = ["docx-text", *name_sources]
+    if options.sensitive_fields:
+        extraction_sources.append("sensitive-pattern-detection")
     hits: list[RedactionHit] = []
 
     for paragraph in doc.paragraphs:
         hits.extend(_redact_docx_paragraph(paragraph, supplier_names, options.replacement_text))
+        hits.extend(_redact_docx_paragraph_sensitive(paragraph, options.sensitive_fields, options.replacement_text))
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
                     hits.extend(_redact_docx_paragraph(paragraph, supplier_names, options.replacement_text))
+                    hits.extend(_redact_docx_paragraph_sensitive(paragraph, options.sensitive_fields, options.replacement_text))
 
     doc.save(output_path)
     if options.redact_all_images or options.redact_header_footer_images:
@@ -134,7 +159,8 @@ async def redact_docx(input_path: Path, options: RedactionOptions) -> RedactionR
         media_type=DOCX_MEDIA_TYPE,
         hits=hits,
         supplier_names=supplier_names,
-        extraction_sources=["docx-text", *name_sources],
+        sensitive_fields=options.sensitive_fields,
+        extraction_sources=extraction_sources,
         warnings=name_warnings,
     )
 
@@ -171,9 +197,14 @@ def _should_run_ocr(native_text: str, options: RedactionOptions) -> bool:
     return len(native_text.strip()) < settings.native_text_min_chars
 
 
-def _redact_page_text(page: fitz.Page, supplier_names: list[str], replacement_text: str) -> list[str]:
+def _redact_page_text(
+    page: fitz.Page,
+    supplier_names: list[str],
+    replacement_text: str,
+    redacted_rects: list[fitz.Rect] | None = None,
+) -> list[str]:
     hits: list[str] = []
-    redacted_rects: list[fitz.Rect] = []
+    redacted_rects = redacted_rects if redacted_rects is not None else []
     names = sorted(supplier_names, key=len, reverse=True)
     for name in names:
         flags = fitz.TEXT_DEHYPHENATE | fitz.TEXT_PRESERVE_WHITESPACE
@@ -184,6 +215,44 @@ def _redact_page_text(page: fitz.Page, supplier_names: list[str], replacement_te
             redacted_rects.append(rect)
             hits.append(name)
     return hits
+
+
+def _redact_page_sensitive_text(
+    page: fitz.Page,
+    fields: list[SensitiveField],
+    replacement_text: str,
+    redacted_rects: list[fitz.Rect] | None = None,
+) -> list[str]:
+    if not fields:
+        return []
+
+    hits: list[str] = []
+    redacted_rects = redacted_rects if redacted_rects is not None else []
+    flags = fitz.TEXT_DEHYPHENATE | fitz.TEXT_PRESERVE_WHITESPACE
+    page_text = page.get_text("text")
+    for match in sorted(find_sensitive_text_matches(page_text, fields), key=lambda item: len(item.value), reverse=True):
+        rects = page.search_for(match.value, flags=flags)
+        if not rects and match.field == "address":
+            rects = _address_block_rects(page, match.value)
+        for rect in rects:
+            if any(rect.intersects(existing) for existing in redacted_rects):
+                continue
+            page.add_redact_annot(rect, text=replacement_text, fill=(0, 0, 0), text_color=(1, 1, 1))
+            redacted_rects.append(rect)
+            hits.append(match.label)
+    return hits
+
+
+def _address_block_rects(page: fitz.Page, value: str) -> list[fitz.Rect]:
+    target = re.sub(r"\s+", " ", value).lower()
+    rects: list[fitz.Rect] = []
+    for block in page.get_text("blocks"):
+        if len(block) < 5:
+            continue
+        text = re.sub(r"\s+", " ", str(block[4])).lower()
+        if target and target in text:
+            rects.append(fitz.Rect(block[:4]))
+    return rects
 
 
 def _image_redaction_rects(page: fitz.Page, options: RedactionOptions) -> list[tuple[fitz.Rect, str]]:
@@ -224,6 +293,23 @@ def _redact_docx_paragraph(paragraph, supplier_names: list[str], replacement_tex
                 hits.append(RedactionHit(kind="text", value=name, reason="supplier-name-match"))
         if redacted != original:
             run.text = redacted
+    return hits
+
+
+def _redact_docx_paragraph_sensitive(
+    paragraph,
+    fields: list[SensitiveField],
+    replacement_text: str,
+) -> list[RedactionHit]:
+    hits: list[RedactionHit] = []
+    if not fields:
+        return hits
+    for run in paragraph.runs:
+        original = run.text
+        redacted, labels = replace_sensitive_text(original, fields, replacement_text)
+        if labels:
+            run.text = redacted
+            hits.extend(RedactionHit(kind="text", value=label, reason="sensitive-info-match") for label in labels)
     return hits
 
 

@@ -9,6 +9,7 @@ from PIL import Image
 from app.config import get_settings
 from app.detection import parse_supplier_names
 from app.models import RedactionOptions, RedactionResult
+from app.sensitive import SENSITIVE_FIELD_LABELS, SENSITIVE_FIELD_ORDER, normalize_sensitive_fields
 
 
 def main() -> None:
@@ -42,7 +43,7 @@ def render_header() -> None:
                 <h1>Supplier Redaction Workspace</h1>
                 <p class="hero-copy">
                     Prepare tender and contract files for review by removing supplier names,
-                    logos, and identifying images from PDF or DOCX documents.
+                    personal information, logos, and identifying images from PDF or DOCX documents.
                 </p>
             </div>
             <div class="status-panel">
@@ -54,7 +55,7 @@ def render_header() -> None:
         </section>
         <section class="flow-strip">
             <div><strong>1</strong><span>Select document</span></div>
-            <div><strong>2</strong><span>Confirm supplier names</span></div>
+            <div><strong>2</strong><span>Choose redaction targets</span></div>
             <div><strong>3</strong><span>Choose OCR and image rules</span></div>
             <div><strong>4</strong><span>Download clean output</span></div>
         </section>
@@ -130,6 +131,18 @@ def render_redaction_panel(uploaded_file) -> RedactionOptions:
         help="Legal commas such as 'Company, LLC' are kept as part of the supplier name.",
     )
 
+    sensitive_labels = {
+        SENSITIVE_FIELD_LABELS[field]: field
+        for field in SENSITIVE_FIELD_ORDER
+    }
+    selected_sensitive_labels = st.multiselect(
+        "Sensitive information to redact",
+        list(sensitive_labels.keys()),
+        placeholder="Choose personal or financial data types",
+        help="Redacts selected categories using deterministic patterns. Raw sensitive values are not shown in the result table.",
+    )
+    sensitive_fields = normalize_sensitive_fields([sensitive_labels[label] for label in selected_sensitive_labels])
+
     detection_mode = st.radio(
         "Supplier discovery",
         ["Manual names only", "Use LLM extraction", "Use LLM + heuristic detection"],
@@ -159,11 +172,12 @@ def render_redaction_panel(uploaded_file) -> RedactionOptions:
     redact_all_images = image_mode == "All images"
     redact_header_footer_images = image_mode == "Header/footer logos"
 
-    if uploaded_file and not names and not use_llm and not detect_supplier_names:
-        st.warning("Add supplier names or turn on LLM extraction before processing.")
+    if uploaded_file and not names and not sensitive_fields and not use_llm and not detect_supplier_names:
+        st.warning("Add supplier names, choose sensitive information, or turn on LLM extraction before processing.")
 
     return RedactionOptions(
         supplier_names=names,
+        sensitive_fields=sensitive_fields,
         detect_supplier_names=detect_supplier_names,
         use_llm_extraction=use_llm,
         use_ocr=use_ocr,
@@ -232,12 +246,17 @@ def render_result_panel() -> None:
 
     text_hits = sum(1 for hit in result.hits if hit.kind == "text")
     image_hits = sum(1 for hit in result.hits if hit.kind == "image")
+    sensitive_hits = sum(1 for hit in result.hits if "sensitive" in hit.reason)
     pages = sorted({hit.page for hit in result.hits if hit.page is not None})
-    render_metrics(text_hits, image_hits, len(result.supplier_names), len(pages))
+    render_metrics(text_hits, image_hits, sensitive_hits, len(pages))
 
     if result.supplier_names:
         st.markdown("**Supplier names used**")
         st.write(", ".join(result.supplier_names))
+
+    if result.sensitive_fields:
+        st.markdown("**Sensitive information selected**")
+        st.write(", ".join(SENSITIVE_FIELD_LABELS[field] for field in result.sensitive_fields))
 
     if result.extraction_sources:
         st.markdown("**Extraction sources**")
@@ -287,8 +306,13 @@ def render_process_bar(uploaded_file, options: RedactionOptions) -> None:
         if not uploaded_file:
             st.error("Upload a PDF or DOCX file first.")
             return
-        if not options.supplier_names and not options.use_llm_extraction and not options.detect_supplier_names:
-            st.error("Add supplier names or enable LLM extraction before running redaction.")
+        if (
+            not options.supplier_names
+            and not options.sensitive_fields
+            and not options.use_llm_extraction
+            and not options.detect_supplier_names
+        ):
+            st.error("Add supplier names, choose sensitive information, or enable LLM extraction before running redaction.")
             return
         process_document(uploaded_file, options)
 
@@ -321,6 +345,7 @@ def request_redaction(uploaded_file, options: RedactionOptions) -> RedactionResu
     api_url = get_api_url()
     data = {
         "supplier_names": "\n".join(options.supplier_names),
+        "sensitive_fields": ",".join(options.sensitive_fields),
         "detect_supplier_names": str(options.detect_supplier_names).lower(),
         "use_llm_extraction": str(bool(options.use_llm_extraction)).lower(),
         "redact_all_images": str(options.redact_all_images).lower(),
@@ -383,11 +408,11 @@ def _extract_api_error(response: httpx.Response) -> str:
     return str(detail or payload)
 
 
-def render_metrics(text_hits: int, image_hits: int, supplier_count: int, page_count: int) -> None:
+def render_metrics(text_hits: int, image_hits: int, sensitive_hits: int, page_count: int) -> None:
     cols = st.columns(4)
     cols[0].metric("Text redactions", text_hits)
     cols[1].metric("Image redactions", image_hits)
-    cols[2].metric("Supplier names", supplier_count)
+    cols[2].metric("Sensitive redactions", sensitive_hits)
     cols[3].metric("Pages touched", page_count)
 
 

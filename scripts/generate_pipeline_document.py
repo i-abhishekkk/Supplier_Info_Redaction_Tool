@@ -96,7 +96,7 @@ def build_document() -> None:
     add_heading(document, "1. Executive Summary", 1)
     add_para(
         document,
-        "The system redacts supplier-identifying information from tender and contract documents. It supports PDF and DOCX input, produces redacted PDF or DOCX output, and records redaction metadata for operator review. "
+        "The system redacts supplier-identifying information and selected sensitive personal/financial information from tender and contract documents. It supports PDF and DOCX input, produces redacted PDF or DOCX output, and records redaction metadata for operator review. "
         "The application is currently optimized for local Windows execution but is structured for future deployment by separating UI concerns from backend processing.",
     )
     add_bullets(
@@ -104,7 +104,7 @@ def build_document() -> None:
         [
             "Streamlit provides the user workflow: upload, preview, options, run, summary, and download.",
             "FastAPI provides the service boundary: health check, redaction request, and secure output download.",
-            "The redaction engine performs document parsing, OCR coordination, supplier-name resolution, text redaction, image redaction, and output creation.",
+            "The redaction engine performs document parsing, OCR coordination, supplier-name resolution, sensitive-pattern detection, text redaction, image redaction, and output creation.",
             "Manual supplier names remain the most controlled source of truth; optional heuristics and LLM extraction are discovery aids.",
             "Runtime files are isolated under data/ so source code, uploads, outputs, and temporary files are separated.",
         ],
@@ -129,6 +129,7 @@ def build_document() -> None:
         "  v\n"
         "Shared Redaction Engine (app/redactors.py)\n"
         "  |-- Supplier parsing/detection (app/detection.py)\n"
+        "  |-- Sensitive pattern detection (app/sensitive.py)\n"
         "  |-- Tesseract OCR (app/ocr.py)\n"
         "  |-- Optional Azure OCR (app/document_intelligence.py)\n"
         "  |-- PDF/DOCX redaction and output writing\n"
@@ -156,7 +157,7 @@ def build_document() -> None:
             ],
             [
                 "Conservative redaction behavior",
-                "Manual names, exact/native matches, OCR token matches, and explicit image options are used.",
+                "Manual names, selected sensitive-field patterns, exact/native matches, OCR token matches, and explicit image options are used.",
                 "Redaction is high impact; deterministic behavior is preferred over aggressive guessing.",
             ],
             [
@@ -179,11 +180,11 @@ def build_document() -> None:
             "The user starts FastAPI with run_api.ps1 and Streamlit with run_ui.ps1.",
             "The user opens the Streamlit UI and uploads a PDF or DOCX file.",
             "Streamlit previews the first PDF page in memory using PyMuPDF; DOCX files are accepted without visual preview.",
-            "The user enters supplier names and selects discovery, image redaction, OCR, and replacement-label options.",
+            "The user enters supplier names and selects sensitive information, discovery, image redaction, OCR, and replacement-label options.",
             "Streamlit posts the file and options to POST /redact using httpx.",
             "FastAPI validates the extension, writes the upload to a temporary per-request folder, and creates RedactionOptions.",
             "The redaction dispatcher routes the file to the PDF or DOCX processing path.",
-            "The pipeline extracts native text and optionally uses OCR/LLM/heuristic sources to resolve supplier names.",
+            "The pipeline extracts native text, detects selected sensitive categories, and optionally uses OCR/LLM/heuristic sources to resolve supplier names.",
             "The pipeline applies text and image redactions, writes the output under data/outputs, and returns RedactionResult metadata.",
             "FastAPI adds a download_url to the response and schedules cleanup of the temporary upload folder.",
             "Streamlit retrieves the generated file from the download_url and presents the download button, metrics, warnings, names used, sources, and redaction details.",
@@ -199,6 +200,11 @@ def build_document() -> None:
                 "Known supplier names",
                 "supplier_names",
                 "Parsed by shared logic. Supports new lines, semicolons, and separator commas while preserving legal suffix commas such as Company, LLC.",
+            ],
+            [
+                "Sensitive information to redact",
+                "sensitive_fields",
+                "Multiselect categories for deterministic redaction of email addresses, phone numbers, bank account details, and addresses.",
             ],
             [
                 "Manual names only",
@@ -253,7 +259,31 @@ def build_document() -> None:
         ],
     )
 
-    add_heading(document, "6. Supplier Name Handling", 1)
+    add_heading(document, "6. Sensitive Information Handling", 1)
+    add_para(
+        document,
+        "Sensitive information redaction is controlled by explicit user-selected categories. The pipeline does not redact every possible number or line by default; it applies deterministic patterns only for the selected categories so operators remain in control of the redaction scope.",
+    )
+    add_table(
+        document,
+        ["Category", "Detection Approach", "Notes"],
+        [
+            ["Email addresses", "Email regex pattern.", "Matches standard mailbox@domain formats."],
+            ["Phone numbers", "Phone-number pattern with support for country codes, separators, and 10-digit numbers.", "Can overlap with numeric identifiers in some documents, so it is user-selectable."],
+            ["Bank account details", "IBAN/IFSC-style patterns and account/bank/routing/swift context lines.", "Context is required for generic long account numbers to reduce false positives."],
+            ["Addresses", "Address keyword and street/postal-code line patterns.", "Address detection is line-based and intentionally conservative."],
+        ],
+    )
+    add_bullets(
+        document,
+        [
+            "Sensitive hits are recorded by category label, not by raw sensitive value, so the result table does not re-expose the redacted information.",
+            "PDF native text, OCR text, and DOCX text all use the shared sensitive detection module.",
+            "The feature can run without supplier names; the user can redact only selected sensitive information if needed.",
+        ],
+    )
+
+    add_heading(document, "7. Supplier Name Handling", 1)
     add_para(
         document,
         "Supplier names are normalized, parsed, expanded, merged, and deduplicated before redaction. This prevents the system from depending on only a single exact phrase when legal documents split parties across lines or vary legal suffix formatting.",
@@ -270,7 +300,7 @@ def build_document() -> None:
         ],
     )
 
-    add_heading(document, "7. PDF Redaction Path", 1)
+    add_heading(document, "8. PDF Redaction Path", 1)
     add_numbered(
         document,
         [
@@ -281,13 +311,15 @@ def build_document() -> None:
             "Combine native text, Azure text, and OCR text for supplier-name resolution.",
             "Resolve supplier names from manual input, optional heuristics, and optional OpenAI extraction.",
             "Search native PDF text with PyMuPDF and add redaction annotations.",
+            "Search native PDF text for selected sensitive-information patterns and add redaction annotations.",
             "Find OCR token-sequence matches and redact the corresponding OCR bounding boxes.",
+            "Find OCR sensitive-information matches and redact the corresponding OCR bounding boxes.",
             "Select image rectangles based on header/footer or all-image settings.",
             "Apply redactions physically and save a new optimized PDF under data/outputs.",
         ],
     )
 
-    add_heading(document, "8. DOCX Redaction Path", 1)
+    add_heading(document, "9. DOCX Redaction Path", 1)
     add_numbered(
         document,
         [
@@ -296,12 +328,13 @@ def build_document() -> None:
             "Resolve names from manual input, optional heuristics, and optional OpenAI extraction.",
             "Walk top-level paragraphs and table cell paragraphs.",
             "Replace matching text inside Word runs.",
+            "Replace selected sensitive-information matches inside Word runs.",
             "Save the redacted DOCX under data/outputs.",
             "When image redaction is enabled, remove embedded media files and relationships from the DOCX zip package.",
         ],
     )
 
-    add_heading(document, "9. Component Responsibilities", 1)
+    add_heading(document, "10. Component Responsibilities", 1)
     add_table(
         document,
         ["File", "Responsibility", "Architectural Notes"],
@@ -337,6 +370,11 @@ def build_document() -> None:
                 "Keeps name-resolution behavior shared across UI/API/CLI.",
             ],
             [
+                "app/sensitive.py",
+                "Sensitive information category labels, parsing, detection patterns, and replacement helpers.",
+                "Keeps email, phone, bank detail, and address redaction behavior consistent across UI/API/CLI/PDF/DOCX/OCR paths.",
+            ],
+            [
                 "app/ocr.py",
                 "Local Tesseract OCR and OCR coordinate mapping.",
                 "Converts page images to OCR words and maps OCR hits back to PDF rectangles.",
@@ -364,7 +402,7 @@ def build_document() -> None:
         ],
     )
 
-    add_heading(document, "10. Dependency Rationale", 1)
+    add_heading(document, "11. Dependency Rationale", 1)
     add_para(
         document,
         "The dependency set is intentionally small and aligned to one of five concerns: user interface, backend service boundary, document manipulation, OCR/text extraction, and optional AI-assisted discovery.",
@@ -388,7 +426,7 @@ def build_document() -> None:
         ],
     )
 
-    add_heading(document, "11. Configuration Reference", 1)
+    add_heading(document, "12. Configuration Reference", 1)
     add_table(
         document,
         ["Setting", "Default", "Meaning"],
@@ -414,7 +452,7 @@ def build_document() -> None:
         ],
     )
 
-    add_heading(document, "12. API Contract", 1)
+    add_heading(document, "13. API Contract", 1)
     add_para(document, "FastAPI is the backend contract for Streamlit and future integrations.")
     add_table(
         document,
@@ -431,6 +469,7 @@ def build_document() -> None:
         [
             ["file", "UploadFile", "PDF or DOCX file to redact."],
             ["supplier_names", "string", "Supplier names separated by new lines, semicolons, or separator commas."],
+            ["sensitive_fields", "string", "Sensitive categories separated by commas, spaces, semicolons, or pipes. Supported values: email, phone, bank_account, address."],
             ["detect_supplier_names", "boolean", "Enables regex-based organization detection."],
             ["use_llm_extraction", "boolean/null", "Forces or disables OpenAI extraction for this request. Null uses settings."],
             ["use_ocr", "boolean/null", "Forces or disables Tesseract OCR for this request. Null uses settings."],
@@ -440,7 +479,7 @@ def build_document() -> None:
         ],
     )
 
-    add_heading(document, "13. Result Metadata", 1)
+    add_heading(document, "14. Result Metadata", 1)
     add_table(
         document,
         ["Field", "Meaning"],
@@ -451,12 +490,13 @@ def build_document() -> None:
             ["media_type", "MIME type of the generated output."],
             ["hits", "List of text/image redaction events."],
             ["supplier_names", "Final merged supplier-name list used for redaction."],
+            ["sensitive_fields", "Sensitive information categories selected for the request."],
             ["extraction_sources", "Labels showing which extraction methods contributed."],
             ["warnings", "Operational warnings such as missing Tesseract or missing OPENAI_API_KEY."],
         ],
     )
 
-    add_heading(document, "14. Runtime Data Management", 1)
+    add_heading(document, "15. Runtime Data Management", 1)
     add_table(
         document,
         ["Location", "Purpose", "Retention Notes"],
@@ -470,12 +510,13 @@ def build_document() -> None:
         ],
     )
 
-    add_heading(document, "15. Validation and Smoke Testing", 1)
+    add_heading(document, "16. Validation and Smoke Testing", 1)
     add_para(document, "The smoke test validates the deployed-style API path and compares it against direct engine execution for the sample contract.")
     add_bullets(
         document,
         [
             "Verifies GET /health.",
+            "Creates a synthetic PDF and verifies email, phone, bank account detail, and address redaction.",
             "Uploads a sample PDF through POST /redact.",
             "Checks that the output file is created.",
             "Downloads the result through GET /download.",
@@ -489,7 +530,7 @@ def build_document() -> None:
         ".\\.venv\\Scripts\\python.exe -B scripts\\smoke_test_pipeline.py",
     )
 
-    add_heading(document, "16. Security and Compliance Considerations", 1)
+    add_heading(document, "17. Security and Compliance Considerations", 1)
     add_bullets(
         document,
         [
@@ -502,7 +543,7 @@ def build_document() -> None:
         ],
     )
 
-    add_heading(document, "17. Known Limitations", 1)
+    add_heading(document, "18. Known Limitations", 1)
     add_bullets(
         document,
         [
@@ -511,12 +552,14 @@ def build_document() -> None:
             "Heuristic detection is optional because contracts often mention organizations that are not suppliers.",
             "DOCX text split across multiple Word runs may not always be redacted as a continuous phrase.",
             "OCR matching is conservative and token-sequence based; very noisy scans may require future fuzzy matching.",
+            "Sensitive information detection uses deterministic patterns and may not catch every real-world address or account format.",
+            "Phone and address formats vary by country; production deployments may need locale-specific pattern packs.",
             "Image redaction applies to embedded image objects. Normal selectable header/footer text is handled by text redaction, not image settings.",
             "Long-running OCR-heavy workloads are currently synchronous HTTP requests; production scale may require background jobs.",
         ],
     )
 
-    add_heading(document, "18. Production Readiness Roadmap", 1)
+    add_heading(document, "19. Production Readiness Roadmap", 1)
     add_table(
         document,
         ["Area", "Recommended Next Step", "Reason"],
@@ -528,11 +571,11 @@ def build_document() -> None:
             ["Candidate review", "Add a confirmation screen for LLM/heuristic names before redaction.", "Reduces over-redaction risk from automated discovery."],
             ["Retention", "Add scheduled cleanup for uploads and old outputs.", "Controls storage growth and sensitive-data exposure."],
             ["Observability", "Add structured logs, metrics, and error tracking.", "Improves production support and incident response."],
-            ["Testing", "Add unit tests for parsing, alias expansion, OCR matching, API options, and DOCX edge cases.", "Protects behavior as the pipeline evolves."],
+            ["Testing", "Add unit tests for parsing, alias expansion, sensitive patterns, OCR matching, API options, and DOCX edge cases.", "Protects behavior as the pipeline evolves."],
         ],
     )
 
-    add_heading(document, "19. Operating Commands", 1)
+    add_heading(document, "20. Operating Commands", 1)
     add_table(
         document,
         ["Task", "Command"],
@@ -546,7 +589,7 @@ def build_document() -> None:
         ],
     )
 
-    add_heading(document, "20. Summary", 1)
+    add_heading(document, "21. Summary", 1)
     add_para(
         document,
         "The pipeline is now structured in a production-aligned way: Streamlit owns the business workflow, FastAPI owns the backend service boundary, and the redaction engine owns deterministic document processing. "

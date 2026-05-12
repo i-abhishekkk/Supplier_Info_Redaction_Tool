@@ -5,12 +5,19 @@ from pathlib import Path
 from app.detection import parse_supplier_names
 from app.models import RedactionOptions
 from app.redactors import redact_document
+from app.sensitive import SENSITIVE_FIELD_ORDER, parse_sensitive_fields
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Redact supplier names and optional images from PDF/DOCX files.")
     parser.add_argument("input", type=Path, help="Path to a PDF or DOCX file.")
     parser.add_argument("--supplier", action="append", default=[], help="Supplier name to redact. Can be repeated.")
+    parser.add_argument(
+        "--sensitive",
+        action="append",
+        default=[],
+        help=f"Sensitive data type to redact. Choices: {', '.join(SENSITIVE_FIELD_ORDER)}. Can be repeated or comma-separated.",
+    )
     parser.add_argument("--detect", action="store_true", help="Enable heuristic supplier-name detection.")
     parser.add_argument("--llm", action="store_true", help="Use OpenAI extraction when OPENAI_API_KEY is configured.")
     parser.add_argument("--ocr", action="store_true", help="Force Tesseract OCR, even for selectable-text PDFs.")
@@ -29,10 +36,14 @@ async def main() -> None:
     supplier_names = []
     for value in args.supplier:
         supplier_names.extend(parse_supplier_names(value))
+    sensitive_fields = []
+    for value in args.sensitive:
+        sensitive_fields.extend(parse_sensitive_fields(value))
     result = await redact_document(
         args.input,
         RedactionOptions(
             supplier_names=supplier_names,
+            sensitive_fields=sensitive_fields,
             detect_supplier_names=args.detect,
             use_llm_extraction=args.llm,
             use_ocr=False if args.no_ocr else (True if args.ocr else None),
@@ -42,6 +53,7 @@ async def main() -> None:
     )
     print(f"Output: {result.output_path}")
     print(f"Supplier names: {', '.join(result.supplier_names) if result.supplier_names else '(none)'}")
+    print(f"Sensitive fields: {', '.join(result.sensitive_fields) if result.sensitive_fields else '(none)'}")
     print(f"Sources: {', '.join(result.extraction_sources) if result.extraction_sources else '(none)'}")
     if result.warnings:
         print("Warnings:")

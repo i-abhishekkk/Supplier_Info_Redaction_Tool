@@ -3,9 +3,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.sensitive import SensitiveField
+
 
 class RedactionOptions(BaseModel):
     supplier_names: list[str] = Field(default_factory=list)
+    sensitive_fields: list[SensitiveField] = Field(default_factory=list)
     detect_supplier_names: bool = False
     use_llm_extraction: bool | None = None
     use_ocr: bool | None = None
@@ -27,6 +30,7 @@ class RedactionResult(BaseModel):
     media_type: str
     hits: list[RedactionHit]
     supplier_names: list[str]
+    sensitive_fields: list[SensitiveField] = Field(default_factory=list)
     extraction_sources: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     download_url: str | None = None

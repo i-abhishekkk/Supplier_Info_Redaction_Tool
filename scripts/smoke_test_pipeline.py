@@ -1,7 +1,10 @@
 import asyncio
+import time
 from pathlib import Path
+from uuid import uuid4
 import sys
 
+import fitz
 from fastapi.testclient import TestClient
 
 
@@ -46,6 +49,56 @@ def run_redaction(client: TestClient, *, use_ocr: str = "false", use_llm_extract
     return payload
 
 
+def run_sensitive_redaction(client: TestClient) -> dict:
+    sample_pdf = ROOT / "data" / "uploads" / f"smoke_sensitive_sample.{uuid4().hex[:8]}.pdf"
+    create_sensitive_sample_pdf(sample_pdf)
+    try:
+        with sample_pdf.open("rb") as stream:
+            response = client.post(
+                "/redact",
+                files={"file": (sample_pdf.name, stream, "application/pdf")},
+                data={
+                    "supplier_names": "",
+                    "sensitive_fields": "email,phone,bank_account,address",
+                    "detect_supplier_names": "false",
+                    "use_ocr": "false",
+                    "use_llm_extraction": "false",
+                    "redact_all_images": "false",
+                    "redact_header_footer_images": "false",
+                    "replacement_text": "REDACTED",
+                },
+            )
+        response.raise_for_status()
+        payload = response.json()
+        sensitive_hits = [hit for hit in payload["hits"] if "sensitive" in hit["reason"]]
+        assert len(sensitive_hits) >= 4, "Expected sensitive information redactions"
+        assert payload["sensitive_fields"] == ["email", "phone", "bank_account", "address"]
+        return payload
+    finally:
+        remove_file_with_retry(sample_pdf)
+
+
+def create_sensitive_sample_pdf(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Email: privacy@example.com")
+    page.insert_text((72, 96), "Phone: +91 98765 43210")
+    page.insert_text((72, 120), "Account No: 123456789012")
+    page.insert_text((72, 144), "Address: 123 Green Street, Mumbai 400001")
+    doc.save(path)
+    doc.close()
+
+
+def remove_file_with_retry(path: Path) -> None:
+    for _ in range(10):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            time.sleep(0.5)
+
+
 async def run_direct_redaction() -> dict:
     result = await redact_document(
         SAMPLE_PDF,
@@ -63,11 +116,13 @@ async def run_direct_redaction() -> dict:
 
 
 def main() -> None:
+    client = TestClient(app)
+    sensitive = run_sensitive_redaction(client)
+
     if not SAMPLE_PDF.exists():
         print(f"Skipping smoke test; sample PDF is not available: {SAMPLE_PDF}")
+        print(f"Sensitive redactions: {len([hit for hit in sensitive['hits'] if 'sensitive' in hit['reason']])}")
         return
-
-    client = TestClient(app)
 
     health = client.get("/health")
     health.raise_for_status()
@@ -80,6 +135,7 @@ def main() -> None:
     warning_path = run_redaction(client, use_ocr="true", use_llm_extraction="true")
 
     print("API health: ok")
+    print(f"Sensitive redactions: {len([hit for hit in sensitive['hits'] if 'sensitive' in hit['reason']])}")
     print(f"Normal run output: {normal['output_path']}")
     print(f"Normal run redactions: {len(normal['hits'])}")
     print(f"Normal run sources: {', '.join(normal['extraction_sources'])}")
